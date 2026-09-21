@@ -1,5 +1,4 @@
-// Vite+ per-package settings. See packages/custom-gatekeeper/vite.config.ts for why `build` and
-// `test` are tasks rather than package.json scripts, and what each exclusion buys.
+// Vite+ per-package settings for build and focused test tasks.
 
 const ownDist = { pattern: '!dist/**', base: 'package' } as const
 

@@ -24,7 +24,8 @@ const packageDirs = {
   workshop: "cloudflare-os/packages/workshop-backend",
   context: "cloudflare-os/packages/gatekeeper-context",
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
-  customGatekeeper: "packages/custom-gatekeeper",
+  mcpGatekeeper: "cloudflare-os/packages/gatekeeper-mcp",
+  githubGatekeeper: "cloudflare-os/packages/gatekeeper-github",
   errorReporter: "packages/error-reporter",
 } as const;
 const generatedPaths = Object.fromEntries(
@@ -39,14 +40,13 @@ const requiredPaths = [
   "workers.workshop.name",
   "workers.context.name",
   "workers.scheduler.name",
-  "workers.customGatekeeper.name",
-  "access.issuer",
-  "access.audience",
-  "access.admins",
+  "workers.mcpGatekeeper.name",
+  "workers.githubGatekeeper.name",
+  "workers.githubGatekeeper.clientId",
+  "auth.mode",
+  "auth.admins",
   "aiGateway.enabled",
   "errorReporting.enabled",
-  "customGatekeeper.name",
-  "customGatekeeper.message",
   "observability.enabled",
   "observability.headSamplingRate",
   "observability.logs.invocationLogs",
@@ -174,8 +174,8 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
 
   for (const path of resourcePaths) {
     const value = valueAt(config, path);
-    if (value === undefined || value !== null && (typeof value !== "string" || !value)) {
-      throw new Error(`Deployment resource must be null or a non-empty string: ${path}`);
+    if (typeof value !== "string" || !value) {
+      throw new Error(`Missing required production resource: ${path}`);
     }
   }
 
@@ -193,7 +193,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (placeholder) throw new Error(`Replace deployment placeholder ${placeholder}.`);
 
   const stringPaths = activePaths.filter((path) => ![
-    "access.admins",
+    "auth.admins",
     "aiGateway.enabled",
     "aiGateway.providers",
     "errorReporting.enabled",
@@ -217,7 +217,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     .map(([, worker]) => worker.name);
   if (new Set(workerNames).size !== workerNames.length) {
     throw new Error(
-      "Router, Workshop, Context, Scheduler, and custom Gatekeeper names must be unique.");
+      "Router, Workshop, Context, Scheduler, MCP, and GitHub Gatekeeper names must be unique.");
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
@@ -248,18 +248,16 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
       "deployment's public origin, which is what the hosted deploy does.");
   }
 
-  const issuer = new URL(config.access.issuer);
-  if (issuer.protocol !== "https:" ||
-      issuer.origin !== config.access.issuer.replace(/\/$/, "")) {
-    throw new Error("Cloudflare Access issuer must be an HTTPS origin only.");
+  if (config.auth.mode !== "github") {
+    throw new Error('auth.mode must be "github".');
   }
-  if (!config.access.audience.trim() || config.access.audience !== config.access.audience.trim()) {
-    throw new Error("Cloudflare Access audience must not be blank or padded with whitespace.");
-  }
-  if (!Array.isArray(config.access.admins) ||
-      !config.access.admins.every((email) =>
+  if (!Array.isArray(config.auth.admins) || !config.auth.admins.length ||
+      !config.auth.admins.every((email) =>
         typeof email === "string" && /^[^@\s]+@[^@\s]+$/.test(email))) {
-    throw new Error("Every Access administrator must be an email address.");
+    throw new Error("Every GitHub administrator must be an email address.");
+  }
+  if (!config.workers.githubGatekeeper.clientId.trim()) {
+    throw new Error("workers.githubGatekeeper.clientId must not be blank.");
   }
 
   validateAiGateway(config);
@@ -305,7 +303,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (typeof traceSampling !== "number" || traceSampling < 0 || traceSampling > 1) {
     throw new Error("Observability trace sampling must be between 0 and 1.");
   }
-  return config;
+  return activeConfig;
 }
 
 /**
@@ -408,9 +406,8 @@ function setCommon(
   config.workers_dev = route.workersDev;
   delete config.routes;
   if (route.customDomain) Object.assign(config, routeConfig(route));
-  // The router is the Access-protected origin, and a preview URL is an unauthenticated path around
-  // it. Off on every Worker: the five behind the router have no business being publicly reachable
-  // either.
+  // The router is the public origin. Preview URLs stay off so every backend and authentication
+  // endpoint is reachable only through the router's intended routes.
   config.preview_urls = false;
   config.observability = {
     ...config.observability,
@@ -434,7 +431,8 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const workshop = structuredClone(bases.workshop);
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
-  const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const mcpGatekeeper = structuredClone(bases.mcpGatekeeper);
+  const githubGatekeeper = structuredClone(bases.githubGatekeeper);
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
@@ -447,14 +445,15 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     // vendor-RPC bindings. The binding name is what picks the /gatekeeper/<name> path.
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
-    { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    { binding: "GATEKEEPER_MCP", service: config.workers.mcpGatekeeper.name },
+    { binding: "GATEKEEPER_GITHUB", service: config.workers.githubGatekeeper.name },
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
   workshop.vars = {
-    ADMINS: config.access.admins,
-    CF_ACCESS_ISS: config.access.issuer.replace(/\/$/, ""),
-    CF_ACCESS_AUD: config.access.audience,
+    ADMINS: config.auth.admins,
+    AUTH_GATEKEEPERS: "github",
+    DISABLE_PASSWORD_AUTH: "true",
     // Upstream builds OAuth redirect URIs and other absolute links from this. The backend has no
     // public route of its own, so the router's origin is the only correct value.
     PUBLIC_BASE_URL: origin,
@@ -480,8 +479,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       };
     }
   }
-  // Unconditional: as well as being the AI Gateway transport, this binding is what webFetch's
-  // toMarkdown() runs on.
+  // Unconditional: webFetch's toMarkdown() runs on this binding even without an AI Gateway catalog.
   workshop.ai = { binding: "WORKERS_AI" };
   workshop.services = [
     ...(config.errorReporting.enabled ? [{
@@ -509,8 +507,13 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       entrypoint: "GatekeeperVendor",
     },
     {
-      binding: "GATEKEEPER_CUSTOM",
-      service: config.workers.customGatekeeper.name,
+      binding: "GATEKEEPER_MCP",
+      service: config.workers.mcpGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    },
+    {
+      binding: "GATEKEEPER_GITHUB",
+      service: config.workers.githubGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
   ];
@@ -546,10 +549,24 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   // here without adding a configuration surface for it.
   setCommon(scheduler, config, config.workers.scheduler.name);
 
-  setCommon(customGatekeeper, config, config.workers.customGatekeeper.name);
-  customGatekeeper.vars = {
-    CUSTOM_NAME: config.customGatekeeper.name,
-    CUSTOM_MESSAGE: config.customGatekeeper.message,
+  setCommon(mcpGatekeeper, config, config.workers.mcpGatekeeper.name);
+  mcpGatekeeper.vars = {
+    ...mcpGatekeeper.vars,
+    BASE_URL: `${origin}/gatekeeper/mcp`,
+  };
+  delete mcpGatekeeper.secrets;
+
+  setCommon(githubGatekeeper, config, config.workers.githubGatekeeper.name);
+  githubGatekeeper.vars = {
+    ...githubGatekeeper.vars,
+    BASE_URL: `${origin}/gatekeeper/github`,
+    CLIENT_ID: config.workers.githubGatekeeper.clientId,
+  };
+  githubGatekeeper.secrets = {
+    required: [...new Set([
+      ...(githubGatekeeper.secrets?.required ?? []),
+      "CLIENT_SECRET",
+    ])],
   };
 
   if (errorReporter) {
@@ -557,7 +574,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   }
 
   return {
-    router, workshop, context, scheduler, customGatekeeper,
+    router, workshop, context, scheduler, mcpGatekeeper, githubGatekeeper,
     ...(errorReporter && { errorReporter }),
   };
 }
@@ -604,11 +621,11 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     // The Scheduler's `build` nests the same cached `vp run build:app`, so it needs the same pair.
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
-    { args: ownBuild("custom-gatekeeper") },
+    { args: submoduleBuild("@gadgets/mcp-gatekeeper") },
+    { args: submoduleBuild("@gadgets/github-gatekeeper") },
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
-    // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
-    // here rather than inherited: a bundle built under a different value is wrong, not just stale.
-    { args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } },
+    // Authentication mode is a build-time constant in the frontend bundle (`src/useAuth.ts`).
+    { args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "false" } },
     { args: submoduleBuild("@gadgets/router") },
     { args: submoduleBuild("@gadgets/workshop-backend") },
   ];
@@ -719,7 +736,8 @@ async function main(): Promise<void> {
     workshop: await readJsonc(join(root, packageDirs.workshop, "wrangler.jsonc")),
     context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
     scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
-    customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
+    mcpGatekeeper: await readJsonc(join(root, packageDirs.mcpGatekeeper, "wrangler.jsonc")),
+    githubGatekeeper: await readJsonc(join(root, packageDirs.githubGatekeeper, "wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
   });
   reportAiGateway(config);
@@ -739,7 +757,8 @@ async function main(): Promise<void> {
     }
     deployWorker(packageDirs.context, deployArgs);
     deployWorker(packageDirs.scheduler, deployArgs);
-    deployWorker(packageDirs.customGatekeeper, deployArgs);
+    deployWorker(packageDirs.mcpGatekeeper, deployArgs);
+    deployWorker(packageDirs.githubGatekeeper, deployArgs);
     deployWorker(packageDirs.workshop, deployArgs);
     // Last: it binds every one of the above.
     deployWorker(packageDirs.router, deployArgs);
