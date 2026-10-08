@@ -18,12 +18,15 @@ const validConfig: DeploymentConfig = {
     workshop: { name: "acme-cloudflare-os-backend" },
     context: { name: "acme-cloudflare-os-context" },
     scheduler: { name: "acme-cloudflare-os-scheduler" },
-    customGatekeeper: { name: "acme-cloudflare-os-custom" },
+    mcpGatekeeper: { name: "acme-cloudflare-os-mcp" },
+    githubGatekeeper: {
+      name: "acme-cloudflare-os-github",
+      clientId: "github-client-id",
+    },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
-  access: {
-    issuer: "https://acme.cloudflareaccess.com",
-    audience: "access-audience",
+  auth: {
+    mode: "github",
     admins: ["admin@example.com"],
   },
   aiGateway: {
@@ -37,7 +40,6 @@ const validConfig: DeploymentConfig = {
     kvNamespaceId: "context-kv-id",
     artifacts: { enabled: true, namespace: "acme-context-collections" },
   },
-  customGatekeeper: { name: "Acme", message: "Use the company handbook." },
   errorReporting: { enabled: true, environment: "production", release: "abc123" },
   resources: {
     blueprintsKvNamespaceId: "blueprints-kv-id",
@@ -73,7 +75,8 @@ async function baseConfigs(): Promise<BaseConfigs> {
     workshop: await baseConfig("../cloudflare-os/packages/workshop-backend/wrangler.jsonc"),
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
-    customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
+    mcpGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc"),
+    githubGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-github/wrangler.jsonc"),
     errorReporter: await baseConfig("../packages/error-reporter/wrangler.jsonc"),
   };
 }
@@ -122,16 +125,14 @@ test("rejects destructive or malformed deployment values", () => {
     /sharingDomain must be null or a non-empty string/i);
 
   assert.throws(
-    () => validateConfig(variant((c) => { c.access.issuer += "/team"; })), /issuer.*origin/i);
+    () => validateConfig(variant((c) => { c.auth.mode = "access"; })), /auth\.mode.*github/i);
 
   assert.throws(
-    () => validateConfig(variant((c) => { c.access.audience = "   "; })), /audience/i);
+    () => validateConfig(variant((c) => { c.auth.admins = ["bad-address"]; })), /email/i);
 
   assert.throws(
-    () => validateConfig(variant((c) => { c.access.audience = " access-audience "; })), /audience/i);
-
-  assert.throws(
-    () => validateConfig(variant((c) => { c.access.admins = ["bad-address"]; })), /email/i);
+    () => validateConfig(variant((c) => { c.workers.githubGatekeeper.clientId = "   "; })),
+    /clientId must not be blank/i);
 
   assert.throws(
     () => validateConfig(variant((c) => {
@@ -186,15 +187,18 @@ test("rejects malformed AI Gateway providers and account", () => {
     /aiGateway.accountId must be null or 32 hexadecimal/i);
 });
 
-test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
-  const generated = generateConfigs(validConfig, await baseConfigs());
+test("generates GitHub-only Workshop, Context, MCP, and GitHub configs", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(validConfig, bases);
   const vars = generated.workshop.vars!;
 
   assert.equal(generated.workshop.name, "acme-cloudflare-os-backend");
   assert.deepEqual(vars.ADMINS, ["admin@example.com"]);
-  assert.equal(vars.CF_ACCESS_ISS, validConfig.access.issuer);
-  assert.equal(vars.CF_ACCESS_AUD, validConfig.access.audience);
+  assert.equal(vars.AUTH_GATEKEEPERS, "github");
+  assert.equal(vars.DISABLE_PASSWORD_AUTH, "true");
   assert.equal(vars.PUBLIC_BASE_URL, "https://os.example.com");
+  assert.equal(vars.CF_ACCESS_ISS, undefined);
+  assert.equal(vars.CF_ACCESS_AUD, undefined);
   assert.equal(vars.CF_AI_GATEWAY, "cloudflare-os");
   assert.equal(vars.CF_AI_GATEWAY_PROVIDERS, "anthropic,cloudflare");
   assert.deepEqual(generated.workshop.ai, { binding: "WORKERS_AI" });
@@ -221,36 +225,58 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       entrypoint: "GatekeeperVendor",
     },
     {
-      binding: "GATEKEEPER_CUSTOM",
-      service: "acme-cloudflare-os-custom",
+      binding: "GATEKEEPER_MCP",
+      service: "acme-cloudflare-os-mcp",
+      entrypoint: "GatekeeperVendor",
+    },
+    {
+      binding: "GATEKEEPER_GITHUB",
+      service: "acme-cloudflare-os-github",
       entrypoint: "GatekeeperVendor",
     },
   ]);
+  assert.equal(generated.workshop.services.some(
+    (service) => service.binding === "GATEKEEPER_CUSTOM"), false);
   assert.deepEqual(generated.workshop.kv_namespaces, [
     { binding: "BLUEPRINTS", id: "blueprints-kv-id" },
     { binding: "AVATARS", id: "avatars-kv-id" },
   ]);
   assert.equal(generated.workshop.r2_buckets![0].bucket_name, "cloudflare-os-blueprints");
+  assert.deepEqual(generated.workshop.migrations, bases.workshop.migrations);
+  assert.deepEqual(generated.workshop.migrations!.at(-1), {
+    tag: "v3",
+    new_sqlite_classes: ["UserDirectoryDurableObject"],
+  });
   assert.equal(generated.context.name, "acme-cloudflare-os-context");
   assert.equal(generated.context.kv_namespaces![0].id, "context-kv-id");
   assert.deepEqual(generated.context.artifacts, [{
     binding: "ARTIFACTS",
     namespace: "acme-context-collections",
   }]);
-  assert.equal(generated.customGatekeeper.name, "acme-cloudflare-os-custom");
-  assert.deepEqual(generated.customGatekeeper.vars, {
-    CUSTOM_NAME: "Acme",
-    CUSTOM_MESSAGE: "Use the company handbook.",
-  });
+
+  assert.equal(generated.githubGatekeeper.name, "acme-cloudflare-os-github");
+  assert.equal(generated.githubGatekeeper.vars!.BASE_URL, "https://os.example.com/gatekeeper/github");
+  assert.equal(generated.githubGatekeeper.vars!.CLIENT_ID, "github-client-id");
+  assert.deepEqual(generated.githubGatekeeper.secrets, { required: ["CLIENT_SECRET"] });
+  for (const key of ["main", "build", "compatibility_date", "compatibility_flags", "rules", "migrations"] as const) {
+    assert.deepEqual(generated.githubGatekeeper[key], bases.githubGatekeeper[key]);
+  }
+
+  assert.equal(generated.mcpGatekeeper.name, "acme-cloudflare-os-mcp");
+  assert.equal(generated.mcpGatekeeper.vars!.BASE_URL, "https://os.example.com/gatekeeper/mcp");
+  assert.equal(generated.mcpGatekeeper.vars!.MCP_ALLOW_INSECURE, "false");
+  assert.equal(generated.mcpGatekeeper.secrets, undefined);
+  assert.deepEqual(generated.mcpGatekeeper.compatibility_flags, bases.mcpGatekeeper.compatibility_flags);
+  assert.ok(generated.mcpGatekeeper.compatibility_flags!.includes("global_fetch_strictly_public"));
+  assert.deepEqual(generated.mcpGatekeeper.migrations, bases.mcpGatekeeper.migrations);
+
   assert.equal(generated.errorReporter!.name, "acme-cloudflare-os-errors");
-  assert.deepEqual(generated.workshop.observability!.logs, {
-    invocation_logs: false,
-  });
+  assert.deepEqual(generated.workshop.observability!.logs, { invocation_logs: false });
   assert.deepEqual(generated.workshop.observability!.traces, {
     enabled: true,
     head_sampling_rate: 0.25,
   });
-  assert.equal(generated.workshop.services!.some(
+  assert.equal(generated.workshop.services.some(
     (service) => service.binding === "FRONTEND_ERROR_REPORTER"), false);
 });
 
@@ -261,14 +287,17 @@ test("gives the router the public route, the frontend, and every service binding
   assert.equal(generated.router.name, "acme-cloudflare-os");
   assert.equal(generated.router.workers_dev, false);
   assert.deepEqual(generated.router.routes, [{ pattern: "os.example.com", custom_domain: true }]);
-  // No entrypoint on any of the three: the router forwards whole HTTP requests rather than making
+  // No entrypoint on Gatekeeper bindings: the router forwards whole HTTP requests rather than making
   // vendor RPC calls, and the binding name is what selects the /gatekeeper/<name> path.
   assert.deepEqual(generated.router.services, [
     { binding: "WORKSHOP_BACKEND", service: "acme-cloudflare-os-backend" },
     { binding: "GATEKEEPER_CONTEXT", service: "acme-cloudflare-os-context" },
     { binding: "GATEKEEPER_SCHEDULER", service: "acme-cloudflare-os-scheduler" },
-    { binding: "GATEKEEPER_CUSTOM", service: "acme-cloudflare-os-custom" },
+    { binding: "GATEKEEPER_MCP", service: "acme-cloudflare-os-mcp" },
+    { binding: "GATEKEEPER_GITHUB", service: "acme-cloudflare-os-github" },
   ]);
+  assert.equal(generated.router.services.some(
+    (service) => service.binding === "GATEKEEPER_CUSTOM"), false);
   // Inherited untouched: the base config already carries the ASSETS binding, the SPA fallback, and
   // the /gatekeeper/* prefix an OAuth Gatekeeper redirect needs.
   assert.deepEqual(generated.router.assets, bases.router.assets);
@@ -326,7 +355,7 @@ test("keeps every Worker behind the router off the public internet", async () =>
       assert.equal(worker.workers_dev, false, `${name} answers on workers.dev`);
       assert.equal(worker.routes, undefined, `${name} carries a public route`);
     }
-    // A preview URL is an unauthenticated path around the Access-protected origin.
+    // A preview URL is an unintended public path around the router's authentication flow.
     assert.equal(worker.preview_urls, false, `${name} leaves preview URLs enabled`);
   }
   // The router serves the frontend, so the backend uploads no assets of its own.
@@ -536,24 +565,24 @@ test("defaults Context Artifacts to disabled when configuration is omitted", asy
   assert.equal(generated.context.artifacts, undefined);
 });
 
-test("generates binding-only storage for automatic provisioning", async () => {
-  const config = variant((c) => {
-    c.context.kvNamespaceId = null;
-    c.resources = {
-      blueprintsKvNamespaceId: null,
-      avatarsKvNamespaceId: null,
-      blueprintContentBucket: null,
-    };
-  });
-
-  const generated = generateConfigs(config, await baseConfigs());
-
-  assert.deepEqual(generated.workshop.kv_namespaces, [
-    { binding: "BLUEPRINTS" },
-    { binding: "AVATARS" },
-  ]);
-  assert.deepEqual(generated.workshop.r2_buckets, [{ binding: "BLUEPRINT_CONTENT" }]);
-  assert.deepEqual(generated.context.kv_namespaces, [{ binding: "CONTEXT_COLLECTIONS" }]);
+test("rejects null production resources instead of provisioning automatically", () => {
+  const paths = [
+    "context.kvNamespaceId",
+    "resources.blueprintsKvNamespaceId",
+    "resources.avatarsKvNamespaceId",
+    "resources.blueprintContentBucket",
+  ];
+  for (const path of paths) {
+    assert.throws(
+      () => validateConfig(variant((c) => {
+        const segments = path.split(".");
+        let target = c;
+        for (const segment of segments.slice(0, -1)) target = target[segment];
+        target[segments.at(-1)!] = null;
+      })),
+      new RegExp(`Missing required production resource: ${path.replace(".", "\\.")}`),
+    );
+  }
 });
 
 /**
@@ -594,9 +623,16 @@ test("rebuilds the Context configurator app rather than replaying it", () => {
   assert.ok(context.every((args) => args.at(-2) === "--no-cache"), context.join("\n"));
 });
 
-test("passes VITE_CF_ACCESS_MODE explicitly rather than inheriting it", () => {
+test("builds the MCP and GitHub Gatekeepers without a custom Gatekeeper", () => {
+  const commands = buildCommands(validConfig).map(({ args }) => args.join(" "));
+  assert.ok(commands.some((command) => command.includes("@gadgets/mcp-gatekeeper")), commands.join("\n"));
+  assert.ok(commands.some((command) => command.includes("@gadgets/github-gatekeeper")), commands.join("\n"));
+  assert.equal(commands.some((command) => command.includes("custom-gatekeeper")), false);
+});
+
+test("disables Cloudflare Access mode explicitly rather than inheriting it", () => {
   const withAccessMode = buildCommands(validConfig).filter(({ env }) => env);
-  assert.deepEqual(withAccessMode.map(({ env }) => env), [{ VITE_CF_ACCESS_MODE: "true" }]);
+  assert.deepEqual(withAccessMode.map(({ env }) => env), [{ VITE_CF_ACCESS_MODE: "false" }]);
   // It has to reach the frontend, which inlines it into the bundle, and nothing else.
   assert.match(withAccessMode[0].args.join(" "), /@gadgets\/workshop-frontend/);
 });
