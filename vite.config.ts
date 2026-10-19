@@ -65,6 +65,7 @@ export default defineConfig({
       // `gadgets/prefer-jsdoc` rule this file does not load) and its own per-directory overrides.
       // Linting it from here would report findings nobody in this repository can fix.
       'cloudflare-os/**',
+      '.pnpm-store/**',
       '**/dist/**',
       '**/generated/**',
       '**/*.gen.ts',
