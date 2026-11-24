@@ -8,9 +8,11 @@ import { join } from "node:path";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import type { BaseConfigs, DeploymentConfig, ProdWranglerConfig } from "./core/deployment-config.ts";
 import {
+  deployOrder,
   generatedOutputs,
   generateConfigs,
   PACKAGE_DIRS,
+  workerName,
   type WorkerId,
 } from "./core/deployment.ts";
 import { loadCatalog } from "./gatekeeper-catalog.ts";
@@ -45,6 +47,7 @@ interface WorkerView {
 
 export interface DeploymentPlan {
   workers: WorkerView[];
+  deployOrder: string[];
 }
 
 const jsonc = { allowTrailingComma: true };
@@ -102,8 +105,11 @@ export async function buildProductionPlan(repoRoot = root): Promise<DeploymentPl
   const bases = Object.fromEntries(await Promise.all(Object.entries(PACKAGE_DIRS).map(async ([key, dir]) =>
     [key, await readJsonc<ProdWranglerConfig>(join(repoRoot, dir, "wrangler.jsonc"))] as const)));
   const catalog = await loadCatalog(repoRoot);
-  const generated = generateConfigs(deployment, bases as BaseConfigs, catalog);
-  return { workers: generatedOutputs(generated).map(([id, config]) => viewOf(id, config)) };
+  const generated = generateConfigs(deployment, bases as unknown as BaseConfigs, catalog);
+  return {
+    workers: generatedOutputs(generated).map(([id, config]) => viewOf(id, config)),
+    deployOrder: deployOrder(deployment).map((id) => workerName(deployment, id)),
+  };
 }
 
 function worker(plan: DeploymentPlan, id: string): WorkerView {
@@ -133,9 +139,11 @@ export function assertProductionPlan(plan: DeploymentPlan): void {
     "cloudflareos-backend",
     "cloudflareos",
   ];
-  if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) {
+  const actual = new Set(names);
+  if (actual.size !== expected.length || expected.some((name) => !actual.has(name))) {
     throw new Error(`generated Workers: ${names.join(", ")}`);
   }
+  sameClasses(plan.deployOrder, expected, "deploy order");
   for (const item of plan.workers) {
     if (item.previewUrls !== false) throw new Error(`${item.id} preview_urls is not false`);
     if (item.workersDev !== false) throw new Error(`${item.id} workers_dev is not false`);
