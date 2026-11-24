@@ -24,7 +24,7 @@ import type {
   GeneratedConfigs,
   ProdWranglerConfig,
 } from "./deployment-config.ts";
-import { testCatalog, testCatalogWithGoogle } from "../test-support.ts";
+import { testCatalog, testCatalogWithGoogle, testCatalogWithMcp } from "../test-support.ts";
 
 const validConfig: DeploymentConfig = {
   accountId: "0123456789abcdef0123456789abcdef",
@@ -962,6 +962,86 @@ test("rejects a Gatekeeper the catalog does not offer, or vars it would not take
   return baseConfigs().then((bases) => assert.throws(
     () => generateConfigs(variant((c) => { c.gatekeepers = { email: { name: "acme-gk-email" } }; }), bases, catalog),
     /cannot deploy gatekeeper-email/));
+});
+
+test("keeps the Workshop's upstream migrations and version metadata", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(validConfig, bases, catalog);
+  // Derived, not rewritten: v4 AdminAuditDurableObject and CF_VERSION_METADATA arrive with the pin.
+  assert.deepEqual(generated.workshop.migrations, bases.workshop.migrations);
+  assert.deepEqual(generated.workshop.migrations!.map((migration) => migration.tag),
+    ["v0", "v1", "v2", "v3", "v4"]);
+  assert.deepEqual(
+    generated.workshop.migrations!.find((migration) => migration.tag === "v4")!.new_sqlite_classes,
+    ["AdminAuditDurableObject"]);
+  assert.deepEqual(generated.workshop.version_metadata, bases.workshop.version_metadata);
+  assert.deepEqual(generated.workshop.version_metadata, { binding: "CF_VERSION_METADATA" });
+});
+
+test("signs in through the GitHub Gatekeeper when auth.mode is github", async () => {
+  const githubCatalog = testCatalogWithMcp();
+  const github = variant((c) => {
+    c.auth = { mode: "github" };
+    delete c.access.issuer;
+    delete c.access.audience;
+    c.aiGateway = { enabled: false };
+    c.customGatekeeper = { enabled: false };
+    delete c.workers.customGatekeeper;
+    c.gatekeepers = {
+      github: { name: "acme-cloudflare-os-github" },
+      mcp: { name: "acme-cloudflare-os-mcp" },
+    };
+  });
+  const bases = await baseConfigs();
+  const generated = generateConfigs(github, bases, githubCatalog);
+  const vars = generated.workshop.vars!;
+
+  assert.deepEqual(vars, {
+    ADMINS: ["admin@example.com"],
+    AUTH_GATEKEEPERS: "github",
+    DISABLE_PASSWORD_AUTH: "true",
+    PUBLIC_BASE_URL: "https://os.example.com",
+  });
+  assert.equal(vars.CF_ACCESS_ISS, undefined);
+  assert.equal(vars.CF_ACCESS_AUD, undefined);
+  assert.equal(vars.CF_AI_GATEWAY, undefined);
+  assert.deepEqual(generated.workshop.ai, { binding: "WORKERS_AI" });
+  assert.equal(generated.customGatekeeper, undefined);
+  assert.equal(generated.router.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
+  assert.equal(generated.workshop.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
+  assert.deepEqual(Object.keys(generated.gatekeepers).toSorted(), ["github", "mcp"]);
+
+  const mcp = generated.gatekeepers.mcp;
+  const mcpBase = githubCatalog.offered.find((gatekeeper) => gatekeeper.slug === "mcp")!.config;
+  assert.deepEqual(mcp.migrations, mcpBase.migrations);
+  assert.deepEqual(mcp.compatibility_flags, mcpBase.compatibility_flags);
+  assert.ok(mcp.compatibility_flags!.includes("global_fetch_strictly_public"));
+  assert.equal(mcp.vars!.MCP_ALLOW_INSECURE, "false");
+  assert.equal(mcp.vars!.BASE_URL, "https://os.example.com/gatekeeper/mcp");
+  assert.equal(generated.gatekeepers.github.secrets, undefined);
+  assert.equal(generated.gatekeepers.github.vars!.CLIENT_ID, undefined);
+  assert.equal(generated.gatekeepers.github.vars!.CLIENT_SECRET, undefined);
+  assert.deepEqual(generated.workshop.migrations, bases.workshop.migrations);
+
+  assert.deepEqual(
+    buildCommands(github, githubCatalog).flat().filter(({ env }) => env).map(({ env }) => env),
+    [{ VITE_CF_ACCESS_MODE: "false" }]);
+  const order = deployOrder(github);
+  assert.ok(order.indexOf("gatekeepers.github") < order.indexOf("workshop"));
+  assert.ok(order.indexOf("gatekeepers.mcp") < order.indexOf("workshop"));
+  assert.ok(order.indexOf("workshop") < order.indexOf("router"));
+  assert.equal(order.includes("customGatekeeper"), false);
+
+  assert.throws(() => validateConfig(variant((c) => {
+    c.auth = { mode: "github" };
+    delete c.access.issuer;
+    delete c.access.audience;
+  })), /requires gatekeepers\.github/);
+  assert.throws(() => validateConfig(variant((c) => {
+    c.auth = { mode: "github" };
+    c.gatekeepers = { github: { name: "acme-gk-github" } };
+  })), /Remove access\.issuer/);
+  assert.throws(() => validateConfig(variant((c) => { c.auth = { mode: "password" }; })), /auth\.mode must be/);
 });
 
 test("needs no catalog when no optional Gatekeeper is selected", () => {

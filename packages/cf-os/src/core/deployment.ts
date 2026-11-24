@@ -6,6 +6,7 @@
 
 import { AI_GATEWAY_PROVIDERS } from "./deployment-config.ts";
 import type {
+  AuthMode,
   BaseConfigs,
   BuildCommand,
   DeploymentConfig,
@@ -244,13 +245,38 @@ function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): vo
 export class PlaceholderError extends Error {}
 
 /**
+ * The sign-in method `config` deploys. Absent is Cloudflare Access, the starter's default.
+ * `"github"` is the GitHub Gatekeeper only: the Workshop allowlists it and turns password login
+ * off, and the frontend is built with Access mode off. Anything else is a hand-edited file.
+ */
+export function authMode(config: DeploymentConfig): AuthMode {
+  const auth = (config as { auth?: unknown }).auth;
+  if (auth === undefined) return "access";
+  if (!auth || typeof auth !== "object" || Array.isArray(auth)) {
+    throw new Error("auth must be an object.");
+  }
+  const record = auth as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => key !== "mode");
+  if (unknown.length) {
+    throw new Error(`auth: only mode is allowed, not ${unknown.join(", ")}.`);
+  }
+  const mode = record.mode ?? "access";
+  if (mode !== "access" && mode !== "github") {
+    throw new Error('auth.mode must be "access" or "github".');
+  }
+  return mode;
+}
+
+/**
  * Checks `config` against everything a deploy relies on, throwing the first problem with the config
  * path it concerns. A file that still holds template placeholders throws {@link PlaceholderError}.
  */
 export function validateConfig(config: DeploymentConfig): DeploymentConfig {
+  const mode = authMode(config);
   const customGatekeeper = customGatekeeperEnabled(config);
   const activePaths = [
-    ...requiredPaths,
+    ...requiredPaths.filter((path) =>
+      mode === "access" || (path !== "access.issuer" && path !== "access.audience")),
     ...(customGatekeeper ? customGatekeeperPaths : []),
     ...(config.aiGateway?.enabled ? aiGatewayPaths : []),
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
@@ -355,13 +381,29 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
       "deployment's public origin, which is what the hosted deploy does.");
   }
 
-  const issuer = new URL(config.access.issuer);
-  if (issuer.protocol !== "https:" ||
-      issuer.origin !== config.access.issuer.replace(/\/$/, "")) {
-    throw new Error("Cloudflare Access issuer must be an HTTPS origin only.");
-  }
-  if (!config.access.audience.trim() || config.access.audience !== config.access.audience.trim()) {
-    throw new Error("Cloudflare Access audience must not be blank or padded with whitespace.");
+  if (mode === "github") {
+    // Access variables would put the Workshop back behind Cloudflare Access, which this deployment
+    // has removed. Password login stays available unless an auth Gatekeeper is allowlisted, so the
+    // GitHub Gatekeeper has to be selected or the deployment would lock nobody out and still offer
+    // a password form.
+    if (config.access.issuer || config.access.audience) {
+      throw new Error(
+        'auth.mode "github" signs in through the GitHub Gatekeeper. Remove access.issuer and access.audience.');
+    }
+    if (!config.gatekeepers?.github) {
+      throw new Error(
+        'auth.mode "github" requires gatekeepers.github. It is the only sign-in, and password login stays off only when that Gatekeeper is allowlisted.');
+    }
+  } else {
+    const issuerValue = config.access.issuer ?? "";
+    const audience = config.access.audience ?? "";
+    const issuer = new URL(issuerValue);
+    if (issuer.protocol !== "https:" || issuer.origin !== issuerValue.replace(/\/$/, "")) {
+      throw new Error("Cloudflare Access issuer must be an HTTPS origin only.");
+    }
+    if (!audience.trim() || audience !== audience.trim()) {
+      throw new Error("Cloudflare Access audience must not be blank or padded with whitespace.");
+    }
   }
   if (!Array.isArray(config.access.admins) ||
       !config.access.admins.every((email) =>
@@ -659,14 +701,28 @@ export function generateConfigs(
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
-  workshop.vars = {
-    ADMINS: config.access.admins,
-    CF_ACCESS_ISS: config.access.issuer.replace(/\/$/, ""),
-    CF_ACCESS_AUD: config.access.audience,
-    // Upstream builds OAuth redirect URIs and other absolute links from this. The backend has no
-    // public route of its own, so the router's origin is the only correct value.
-    PUBLIC_BASE_URL: origin,
-  };
+  // Upstream builds OAuth redirect URIs and other absolute links from PUBLIC_BASE_URL. The backend
+  // has no public route of its own, so the router's origin is the only correct value.
+  if (authMode(config) === "github") {
+    workshop.vars = {
+      ADMINS: config.access.admins,
+      AUTH_GATEKEEPERS: "github",
+      DISABLE_PASSWORD_AUTH: "true",
+      PUBLIC_BASE_URL: origin,
+    };
+  } else {
+    const issuer = config.access.issuer;
+    const audience = config.access.audience;
+    if (!issuer || !audience) {
+      throw new Error("Access mode requires access.issuer and access.audience.");
+    }
+    workshop.vars = {
+      ADMINS: config.access.admins,
+      CF_ACCESS_ISS: issuer.replace(/\/$/, ""),
+      CF_ACCESS_AUD: audience,
+      PUBLIC_BASE_URL: origin,
+    };
+  }
   const gateway = aiGatewayPlan(config);
   if (gateway) {
     Object.assign(workshop.vars, {
@@ -875,7 +931,10 @@ export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatal
     ...gatekeeperSlugs(config).map((slug) => [{ args: submoduleBuild(offeredGatekeeper(catalog, slug).packageName) }]),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
-    [{ args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } }],
+    [{
+      args: submoduleBuild("@gadgets/workshop-frontend"),
+      env: { VITE_CF_ACCESS_MODE: authMode(config) === "github" ? "false" : "true" },
+    }],
     [{ args: submoduleBuild("@gadgets/router") }],
     [{ args: submoduleBuild("@gadgets/workshop-backend") }],
   ];

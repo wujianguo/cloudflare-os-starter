@@ -36,7 +36,7 @@ This repository adds deployment controls around a pinned [Cloudflare OS](https:/
 | Control | What you own |
 | --- | --- |
 | Branding | Site name, logo, and accent color, changed in [`/admin`](docs/customization.md#branding) without a deploy |
-| Identity | The sign-in method and administrator allowlist; this starter deploys [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode |
+| Identity | The sign-in method and administrator allowlist. The default is [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/). `"auth": { "mode": "github" }` signs in only through the GitHub Gatekeeper |
 | Routing | A production [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) or a `workers.dev` evaluation route |
 | Data | Existing KV/R2 resources or [automatic provisioning](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning) |
 | Integrations | Wrapper-owned Gatekeepers and service bindings without patching upstream |
@@ -49,7 +49,7 @@ This repository adds deployment controls around a pinned [Cloudflare OS](https:/
 
 The deployment is up to seven Workers, plus any optional Gatekeepers you choose. A **router** owns the public route and serves the frontend, proxying `/api` to the Workshop backend and `/gatekeeper/<name>` to whichever Gatekeeper the binding name matches; the Workshop, the Context, Scheduler, Web Search and custom Gatekeepers, and the Error Reporter sit behind it with no route of their own, reachable only over service bindings.
 
-The deploy command derives temporary Wrangler files from upstream base configs, builds the frontend in Cloudflare Access mode, deploys the private Error Reporter, the Gatekeepers and the Workshop before the router that binds them, and removes generated files even on failure. Secrets never enter tracked configuration.
+The deploy command derives temporary Wrangler files from upstream base configs, builds the frontend for the configured sign-in mode (Cloudflare Access by default, GitHub-only when `auth.mode` is `"github"`), deploys the private Error Reporter, the Gatekeepers and the Workshop before the router that binds them, and removes generated files even on failure. Secrets never enter tracked configuration.
 
 ### If you only want branding
 
@@ -79,7 +79,7 @@ Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](h
 
 ### 2. Configure sign-in
 
-Cloudflare OS supports several sign-in methods. This starter deploys [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode, which verifies identity before a request reaches the Worker. See [Sign-in methods](docs/customization.md#sign-in-methods) for the alternatives and what switching involves.
+Cloudflare OS supports several sign-in methods. This starter deploys [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode by default, which verifies identity before a request reaches the Worker. `"auth": { "mode": "github" }` signs in only through the GitHub Gatekeeper. See [Sign-in methods](docs/customization.md#sign-in-methods).
 
 `pnpm cf-os init` does all of this: it asks for Worker names, a hostname, admin emails and the AI Gateway, with defaults read from your account, finds or creates the Access application, and writes `deployment.jsonc`. To do it by hand:
 

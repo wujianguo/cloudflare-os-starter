@@ -22,6 +22,7 @@ import {
   type CloudflareClient,
 } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
+import { authMode } from "./deployment.ts";
 import type { GatekeeperCatalog } from "./gatekeepers.ts";
 
 /** The outcome: what is wrong, or why nothing was checked. */
@@ -43,7 +44,9 @@ export async function verifyAccount(
   const reads = startReads(client, config);
   const problems: string[] = [];
   try {
-    await checkAccess(reads, config, origin, problems);
+    // GitHub sign-in has no Access application to compare. Reading the team domain would fail a
+    // deployment that has removed Access on purpose.
+    if (authMode(config) === "access") await checkAccess(reads, config, origin, problems);
     await checkStorage(reads, config, problems);
     return { problems };
   } catch (error) {
@@ -59,8 +62,8 @@ export async function verifyAccount(
 
 /** The reads {@link verifyAccount} judges, started; a storage read is absent when nothing needs it. */
 interface AccountReads {
-  organization: Promise<CfOrganization>;
-  accessApps: Promise<CfAccessApp[]>;
+  organization?: Promise<CfOrganization>;
+  accessApps?: Promise<CfAccessApp[]>;
   kvNamespaces?: Promise<CfKvNamespace[]>;
   buckets?: Promise<string[]>;
   gateways?: Promise<CfAiGateway[]>;
@@ -90,9 +93,12 @@ function gatewayToFind(config: DeploymentConfig): string | undefined {
 
 /** Starts every read `config` calls for, at once, in the order they are judged. */
 function startReads(client: CloudflareClient, config: DeploymentConfig): AccountReads {
+  const access = authMode(config) === "access";
   return {
-    organization: started(client.getOrganization(config.accountId)),
-    accessApps: started(client.listAccessApps(config.accountId)),
+    ...(access ? {
+      organization: started(client.getOrganization(config.accountId)),
+      accessApps: started(client.listAccessApps(config.accountId)),
+    } : {}),
     // Only explicit IDs: null asks wrangler to provision, which needs nothing to exist yet.
     ...(kvPaths(config).some(([, id]) => id) ? { kvNamespaces: started(client.listKvNamespaces(config.accountId)) } : {}),
     ...(config.resources.blueprintContentBucket ? { buckets: started(client.listR2Buckets(config.accountId)) } : {}),
@@ -114,6 +120,12 @@ async function checkAccess(
   problems: string[],
 ): Promise<void> {
   const host = new URL(origin).host;
+  const configuredIssuer = config.access.issuer;
+  const configuredAudience = config.access.audience;
+  if (!reads.organization || !reads.accessApps || !configuredIssuer || !configuredAudience) {
+    problems.push("access.issuer and access.audience are required when sign-in uses Cloudflare Access.");
+    return;
+  }
 
   let issuer: string | undefined;
   try {
@@ -122,27 +134,27 @@ async function checkAccess(
     if (error instanceof CfAuthError || error instanceof CfUnavailableError) throw error;
     problems.push(`access.issuer: the account has no readable Zero Trust organization (${(error as Error).message}).`);
   }
-  const configured = config.access.issuer.replace(/\/$/, "").toLowerCase();
+  const configured = configuredIssuer.replace(/\/$/, "").toLowerCase();
   if (issuer && issuer.toLowerCase() !== configured) {
     problems.push(
-      `access.issuer is ${config.access.issuer}, but the account's Zero Trust team domain is ` +
+      `access.issuer is ${configuredIssuer}, but the account's Zero Trust team domain is ` +
       `${issuer}. The Workshop would reject every Access token it is sent.`);
   }
 
   const all = await reads.accessApps;
-  const apps = all.filter((app) => app.aud === config.access.audience);
+  const apps = all.filter((app) => app.aud === configuredAudience);
   const applied = accessAppFor(all, host);
   if (!apps.length) {
     problems.push(
       `access.audience: no Access application in account ${config.accountId} has AUD tag ` +
-      `${config.access.audience}. Copy it from the application protecting ${host}, or run ` +
+      `${configuredAudience}. Copy it from the application protecting ${host}, or run ` +
       "`pnpm cf-os access` to find or create it.");
-  } else if (applied && applied.aud !== config.access.audience && apps.some((app) => accessAppCovers(app, host))) {
+  } else if (applied && applied.aud !== configuredAudience && apps.some((app) => accessAppCovers(app, host))) {
     problems.push(
       `access.audience: Access application "${applied.name}" (AUD ${applied.aud}) names ${host} more ` +
       `specifically than "${apps[0].name}" does, so it is the one Access applies there, and the Workshop ` +
       "would reject the tokens it issues. Point access.audience at it, or remove the hostname from it.");
-  } else if (!applied || applied.aud !== config.access.audience) {
+  } else if (!applied || applied.aud !== configuredAudience) {
     problems.push(
       `access.audience: Access application "${apps[0].name}" does not gate every path of ${host}, ` +
       "which is where the router answers: it names " +

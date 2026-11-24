@@ -298,6 +298,13 @@ export function testCatalogWithGitlab(): GatekeeperCatalog {
   return catalog;
 }
 
+/** {@link testCatalog} with the user-endpoint MCP Gatekeeper, which takes no OAuth inputs. */
+export function testCatalogWithMcp(): GatekeeperCatalog {
+  const catalog = testCatalog();
+  catalog.offered.push(offeredGatekeeper("mcp", "gatekeeper-mcp", "@gadgets/mcp-gatekeeper", true));
+  return catalog;
+}
+
 /** {@link testCatalog} with Google too: an optional Gatekeeper with a Workers AI binding of its own. */
 export function testCatalogWithGoogle(): GatekeeperCatalog {
   const catalog = testCatalog();

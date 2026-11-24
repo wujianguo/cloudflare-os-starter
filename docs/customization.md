@@ -30,7 +30,8 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `workers.*.name` | Stable Worker service identities | Unique lowercase names; changing one creates a differently named Worker |
 | `workers.router.route` | The deployment's public address | `customDomain` for production or `workersDev: true` for evaluation |
 | `gatekeepers` | Optional upstream Gatekeepers, one Worker each | Slugs from upstream's catalog, each with a Worker name and optional vars; see [Optional Gatekeepers](#optional-gatekeepers) |
-| `access` | Cloudflare Access trust and administrator list | Access team issuer, application audience, and verified email list |
+| `auth` | Sign-in method | Absent or `"access"` deploys Cloudflare Access. `"github"` signs in only through `gatekeepers.github`, with password login off |
+| `access` | Administrator list, and Cloudflare Access trust in Access mode | `admins` always; `issuer` and `audience` when `auth.mode` is absent or `"access"` |
 | `aiGateway` | Deployment-managed model catalog | Enabled by default over the Workers AI binding; which providers to advertise, and which gateway |
 | `context` | Context sharing boundary, snapshot KV, and optional Artifacts repositories | `null` to scope data to the public origin, or a pinned stable label; automatic or existing KV; Git-backed collections disabled or enabled |
 | `customGatekeeper` | Whether the example integration deploys, and its identity and guidance | `enabled: false` to deploy none; organization-specific display text |
@@ -107,19 +108,18 @@ Each one is an entry under `gatekeepers`, keyed by its slug:
 
 ### Sign-in methods
 
-Cloudflare OS supports three ways to sign users in. This starter deploys Cloudflare Access.
+Cloudflare OS supports three ways to sign users in. This starter deploys Cloudflare Access unless `auth.mode` says otherwise.
 
 | Method | How it works | In this starter |
 | --- | --- | --- |
-| Cloudflare Access | Access verifies identity before the request reaches the Worker, and the Workshop trusts the signed Access JWT. The password login and signup pages are disabled. | Deployed by default |
-| Built-in password accounts | Cloudflare OS serves its own username and password login plus signup. This is the upstream default. | Requires deploy script changes |
-| Auth Gatekeepers | Gatekeepers that advertise `providesAuth` add "Continue with ..." buttons, alongside or instead of password login. | Requires deploy script changes |
+| Cloudflare Access | Access verifies identity before the request reaches the Worker, and the Workshop trusts the signed Access JWT. The password login and signup pages are disabled. | Default. Leave `auth` unset, or set `"auth": { "mode": "access" }`, and set `access.issuer` and `access.audience`. |
+| GitHub Gatekeeper | The GitHub Gatekeeper adds "Continue with GitHub". Password login and signup stay off, and the request is not behind Access. | `"auth": { "mode": "github" }` with `gatekeepers.github` selected. Omit `access.issuer` and `access.audience`. |
+| Built-in password accounts | Cloudflare OS serves its own username and password login plus signup. This is the upstream default when neither Access nor an auth Gatekeeper allowlist is set. | Still requires a deploy-script change. This starter does not emit that configuration. |
+| Other auth Gatekeepers | Gatekeepers that advertise `providesAuth` can add their own "Continue with ..." buttons. | GitHub is the wired allowlist. Another provider still requires a deploy-script change. |
 
-Access mode is the default here because unauthenticated requests never reach application code. `packages/cf-os/src/core/deployment.ts` implements it by setting `CF_ACCESS_ISS` and `CF_ACCESS_AUD` on the Workshop and building the frontend with `VITE_CF_ACCESS_MODE=true`.
+Access mode sets `CF_ACCESS_ISS` and `CF_ACCESS_AUD` on the Workshop and builds the frontend with `VITE_CF_ACCESS_MODE=true`. GitHub mode sets `AUTH_GATEKEEPERS=github` and `DISABLE_PASSWORD_AUTH=true`, omits the Access variables, and builds the frontend with `VITE_CF_ACCESS_MODE=false`. Upstream ignores the password switch unless at least one auth Gatekeeper is allowlisted, so GitHub mode requires `gatekeepers.github`.
 
-To run another method, drop those two variables and the build flag, then set upstream's `AUTH_GATEKEEPERS` allowlist for provider sign-in. `DISABLE_PASSWORD_AUTH=true` makes a deployment provider-only. Upstream ignores it unless at least one auth Gatekeeper is allowlisted, so a deployment cannot lock everyone out. The wrapper's validation assumes Access mode, so review the upstream Workshop backend and frontend documentation before changing it.
-
-The `admins` list gates `/admin` in every method.
+The `admins` list gates `/admin` in every method. In GitHub mode those addresses are the GitHub account's primary verified email.
 
 #### Cloudflare Access
 

@@ -32,13 +32,25 @@ export interface RouterRoute {
   customDomain?: string;
 }
 
+/** How users sign in. Absent means {@link AuthMode} `"access"`. */
+export type AuthMode = "access" | "github";
+
 /** Cloudflare Access trust boundary and the `/admin` allowlist. */
 export interface AccessConfig {
-  /** Access team origin, HTTPS with no path. */
-  issuer: string;
-  /** The self-hosted Access application's AUD tag. */
-  audience: string;
-  /** Access-verified emails allowed into `/admin`. */
+  /**
+   * Access team origin, HTTPS with no path. Required when sign-in is Access. Omit it when
+   * `auth.mode` is `"github"`.
+   */
+  issuer?: string;
+  /**
+   * The self-hosted Access application's AUD tag. Required when sign-in is Access. Omit it when
+   * `auth.mode` is `"github"`.
+   */
+  audience?: string;
+  /**
+   * Emails allowed into `/admin`. Access-verified addresses in Access mode; the GitHub account's
+   * primary verified email when `auth.mode` is `"github"`.
+   */
   admins: string[];
 }
 
@@ -129,6 +141,12 @@ export interface DeploymentConfig {
    * reads from the submodule, and `validateGatekeepers` checks the entries against it.
    */
   gatekeepers?: Record<string, GatekeeperEntry>;
+  /**
+   * Sign-in method. Absent deploys Cloudflare Access. `"github"` signs in only through the GitHub
+   * Gatekeeper: `gatekeepers.github` is required, password login is off, and Access issuer and
+   * audience are omitted.
+   */
+  auth?: { mode?: AuthMode };
   access: AccessConfig;
   aiGateway: AiGatewayConfigInput;
   context: ContextConfig;

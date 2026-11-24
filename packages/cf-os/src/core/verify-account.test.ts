@@ -271,6 +271,20 @@ function verifyFake(replies: Record<string, FakeReply>, delay?: (args: string[])
   return { result: verifyAccount(cfClient({ spawn: cf.spawn }), config, origin), calls: cf.calls };
 }
 
+test("skips Cloudflare Access reads when sign-in is the GitHub Gatekeeper", async () => {
+  const github = {
+    ...config,
+    auth: { mode: "github" },
+    access: { admins: ["a@example.com"] },
+    gatekeepers: { github: { name: "acme-gk-github" } },
+  } as DeploymentConfig;
+  const cf = fakeCf(fakeAccount());
+  assert.deepEqual(await verifyAccount(cfClient({ spawn: cf.spawn }), github, origin), { problems: [] });
+  const commands = cf.calls.map((call) => call.args.join(" "));
+  assert.equal(commands.some((command) => command.includes("zero-trust")), false);
+  assert.ok(commands.some((command) => command.includes("kv")));
+});
+
 test("reads at once, and judges the same whichever read finishes first", async () => {
   const cases: Record<string, FakeReply>[] = [
     // Wrong in every respect.
