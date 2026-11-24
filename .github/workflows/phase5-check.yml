@@ -43,6 +43,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The Wrangler dry-run log does not print migrations. This prints the generated
+      # plan: tags, class names, flags, and binding names. It does not print var values.
+      - name: Print generated migration plan
+        run: node packages/cf-os/src/print-deployment-plan.ts
+
       - name: Check upstream Worker configs
         run: pnpm --dir cloudflare-os configs:check
 
