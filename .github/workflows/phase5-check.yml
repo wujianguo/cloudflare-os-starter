@@ -1,0 +1,55 @@
+name: Phase 5 check
+
+# Non-production verification for the pinned seven-Worker deployment.
+# pull_request runs from this branch without a default-branch workflow_dispatch.
+# No Cloudflare token is used. A dry-run that asks for authentication is a stop, not a prompt to add one.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Config, types, and dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: phase5-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Reject Cloudflare credentials
+        run: |
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}${CLOUDFLARE_API_KEY:-}${CLOUDFLARE_EMAIL:-}" ]; then
+            echo "This job refuses Cloudflare credentials. Unset them and do not add a token."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check upstream Worker configs
+        run: pnpm --dir cloudflare-os configs:check
+
+      - name: Type-check upstream scripts
+        run: pnpm --dir cloudflare-os types:scripts
+
+      # Validates deployment.jsonc, builds with --no-cache, and dry-runs each Worker.
+      # `pnpm check` is `cf-os check`, not `cf-os deploy`.
+      - name: Full check and Wrangler dry-run
+        run: pnpm check
