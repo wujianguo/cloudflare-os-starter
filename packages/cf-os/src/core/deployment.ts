@@ -85,6 +85,15 @@ export function customGatekeeperEnabled(config: DeploymentConfig): boolean {
   return config.customGatekeeper?.enabled !== false;
 }
 
+/**
+ * Whether Web Search deploys. Absent `webSearch.enabled` means it does, matching the hosted
+ * preinstall. `false` leaves it out of the generated configs, the bindings, the build, and the
+ * deploy order.
+ */
+export function webSearchEnabled(config: DeploymentConfig): boolean {
+  return config.webSearch?.enabled !== false;
+}
+
 /** The slugs of the optional Gatekeepers `config` selects. */
 export function gatekeeperSlugs(config: DeploymentConfig): string[] {
   return Object.keys(config.gatekeepers ?? {});
@@ -274,9 +283,11 @@ export function authMode(config: DeploymentConfig): AuthMode {
 export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   const mode = authMode(config);
   const customGatekeeper = customGatekeeperEnabled(config);
+  const webSearch = webSearchEnabled(config);
   const activePaths = [
     ...requiredPaths.filter((path) =>
-      mode === "access" || (path !== "access.issuer" && path !== "access.audience")),
+      (mode === "access" || (path !== "access.issuer" && path !== "access.audience")) &&
+      (webSearch || path !== "workers.websearch.name")),
     ...(customGatekeeper ? customGatekeeperPaths : []),
     ...(config.aiGateway?.enabled ? aiGatewayPaths : []),
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
@@ -312,6 +323,13 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
       customGatekeeper: { enabled: false } as DeploymentConfig["customGatekeeper"],
     };
   }
+  if (!webSearch) {
+    activeConfig = {
+      ...activeConfig,
+      workers: { ...activeConfig.workers, websearch: undefined },
+      webSearch: { enabled: false },
+    };
+  }
   const placeholder = JSON.stringify(activeConfig).match(/<[^>]+>/)?.[0];
   if (placeholder) throw new PlaceholderError(`Replace deployment placeholder ${placeholder}.`);
 
@@ -338,11 +356,15 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (config.customGatekeeper.enabled !== undefined && typeof config.customGatekeeper.enabled !== "boolean") {
     throw new Error("customGatekeeper.enabled must be a boolean.");
   }
+  if (config.webSearch?.enabled !== undefined && typeof config.webSearch.enabled !== "boolean") {
+    throw new Error("webSearch.enabled must be a boolean.");
+  }
   validateGatekeeperEntries(config);
   const workerNames = [
     ...Object.entries(config.workers)
       .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
       .filter(([key]) => key !== "customGatekeeper" || customGatekeeper)
+      .filter(([key]) => key !== "websearch" || webSearch)
       .map(([, worker]) => worker!.name),
     ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
   ];
@@ -676,7 +698,9 @@ export function generateConfigs(
   const workshop = structuredClone(bases.workshop);
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
-  const websearch = structuredClone(bases.websearch);
+  const webSearch = webSearchEnabled(config);
+  const websearchName = config.workers.websearch?.name;
+  const websearch = webSearch ? structuredClone(bases.websearch) : undefined;
   const customGatekeeper = customGatekeeperEnabled(config)
     ? structuredClone(bases.customGatekeeper)
     : undefined;
@@ -693,7 +717,9 @@ export function generateConfigs(
     // vendor-RPC bindings. The binding name is what picks the /gatekeeper/<name> path.
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
-    { binding: "GATEKEEPER_WEBSEARCH", service: config.workers.websearch.name },
+    ...(websearchName && webSearch
+      ? [{ binding: "GATEKEEPER_WEBSEARCH", service: websearchName }]
+      : []),
     ...(customGatekeeper
       ? [{ binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper!.name }]
       : []),
@@ -774,11 +800,11 @@ export function generateConfigs(
     },
     // No props either: searches are scoped to nobody, and the only state is the per-workspace
     // `WebSearchGatekeeper` facet, reached through `ctx.exports`.
-    {
+    ...(websearchName && webSearch ? [{
       binding: "GATEKEEPER_WEBSEARCH",
-      service: config.workers.websearch.name,
+      service: websearchName,
       entrypoint: "GatekeeperVendor",
-    },
+    }] : []),
     ...(customGatekeeper ? [{
       binding: "GATEKEEPER_CUSTOM",
       service: config.workers.customGatekeeper!.name,
@@ -829,8 +855,11 @@ export function generateConfigs(
   // the Workshop's, as upstream's deploy service sets it, so its searches share that gateway's keys,
   // limits and logs. Unset, it is `default`, which Cloudflare creates on first use: so with the
   // catalog off, and for a gateway in another account, which the `AI` binding cannot reach.
-  setCommon(websearch, config, config.workers.websearch.name);
-  if (gateway && !gateway.crossAccount) websearch.vars = { CF_AI_GATEWAY: config.aiGateway.name };
+  // `webSearch.enabled: false` skips the Worker entirely: no config, no binding, no deploy.
+  if (websearch && websearchName) {
+    setCommon(websearch, config, websearchName);
+    if (gateway && !gateway.crossAccount) websearch.vars = { CF_AI_GATEWAY: config.aiGateway.name };
+  }
 
   if (customGatekeeper) {
     setCommon(customGatekeeper, config, config.workers.customGatekeeper!.name);
@@ -864,7 +893,8 @@ export function generateConfigs(
   }
 
   return {
-    router, workshop, context, scheduler, websearch,
+    router, workshop, context, scheduler,
+    ...(websearch && websearchName ? { websearch } : {}),
     ...(customGatekeeper && { customGatekeeper }),
     ...(errorReporter && { errorReporter }),
     gatekeepers,
@@ -921,7 +951,7 @@ export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatal
       { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
     ],
     // A type-check only: wrangler's own build command runs capnweb-validate at deploy time.
-    [{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }],
+    ...(webSearchEnabled(config) ? [[{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }]] : []),
     ...(customGatekeeperEnabled(config) ? [[{ args: ownBuild("custom-gatekeeper") }]] : []),
     ...(config.errorReporting.enabled ? [[{ args: ownBuild("error-reporter") }]] : []),
     // One step each. Every optional Gatekeeper's `build` task depends on `build:configurator`, the
@@ -952,7 +982,8 @@ export function deployWaves(config: DeploymentConfig): WorkerId[][] {
   return [
     [
       ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
-      "context", "scheduler", "websearch",
+      "context", "scheduler",
+      ...(webSearchEnabled(config) ? ["websearch" as const] : []),
       ...(customGatekeeperEnabled(config) ? ["customGatekeeper" as const] : []),
       ...gatekeeperSlugs(config).map(gatekeeperWorkerId),
     ],

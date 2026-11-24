@@ -129,7 +129,10 @@ export interface DeploymentConfig {
      * flow. Searches through `aiGateway`'s gateway; through the account's `default` one when that is
      * disabled or in another account.
      */
-    websearch: { name: string };
+    /**
+     * Required when Web Search deploys. Omitted, and ignored, when `webSearch.enabled` is false.
+     */
+    websearch?: { name: string };
     /** Only required when `customGatekeeper.enabled` is not false. */
     customGatekeeper?: { name: string };
     /** Only required when `errorReporting.enabled`. */
@@ -147,6 +150,12 @@ export interface DeploymentConfig {
    * audience are omitted.
    */
   auth?: { mode?: AuthMode };
+  /**
+   * Whether the Web Search Gatekeeper deploys. Absent deploys it, which is the starter default and
+   * what the hosted flow preinstalls. `enabled: false` omits the Worker, its service bindings, its
+   * build, and its place in the deploy order, so a deployment that never had it keeps its Worker set.
+   */
+  webSearch?: { enabled?: boolean };
   access: AccessConfig;
   aiGateway: AiGatewayConfigInput;
   context: ContextConfig;
@@ -225,7 +234,8 @@ export interface GeneratedConfigs {
   workshop: ProdWranglerConfig;
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
-  websearch: ProdWranglerConfig;
+  /** Absent when `webSearch.enabled` is false. */
+  websearch?: ProdWranglerConfig;
   /** Absent when `customGatekeeper.enabled` is false. */
   customGatekeeper?: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */

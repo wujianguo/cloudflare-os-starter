@@ -348,7 +348,8 @@ test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", as
   const bases = await baseConfigs();
   const generated = generateConfigs(validConfig, bases, catalog);
 
-  assert.equal(generated.websearch.name, "acme-cloudflare-os-websearch");
+  const websearch = generated.websearch!;
+  assert.equal(websearch.name, "acme-cloudflare-os-websearch");
   assert.deepEqual(
     generated.workshop.services!.find((service) => service.binding === "GATEKEEPER_WEBSEARCH"),
     {
@@ -362,19 +363,19 @@ test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", as
 
   // Carried verbatim from upstream: the Workers AI binding the search runs on, the rule that bundles
   // its agent-facing types as text, and the Durable Object history of its workspace facet.
-  assert.deepEqual(generated.websearch.ai, bases.websearch.ai);
-  assert.equal(generated.websearch.ai!.binding, "AI");
-  assert.deepEqual(generated.websearch.rules, bases.websearch.rules);
-  assert.deepEqual(generated.websearch.migrations, bases.websearch.migrations);
-  assert.ok(generated.websearch.migrations!.length > 0, "websearch lost its DO migrations");
-  assert.equal(generated.websearch.secrets, undefined);
+  assert.deepEqual(websearch.ai, bases.websearch.ai);
+  assert.equal(websearch.ai!.binding, "AI");
+  assert.deepEqual(websearch.rules, bases.websearch.rules);
+  assert.deepEqual(websearch.migrations, bases.websearch.migrations);
+  assert.ok(websearch.migrations!.length > 0, "websearch lost its DO migrations");
+  assert.equal(websearch.secrets, undefined);
 
   // It searches through the Workshop's gateway, when the AI binding can reach it; else `default`.
-  assert.deepEqual(generated.websearch.vars, { CF_AI_GATEWAY: "cloudflare-os" });
+  assert.deepEqual(websearch.vars, { CF_AI_GATEWAY: "cloudflare-os" });
   const off = generateConfigs(variant((c) => { c.aiGateway.enabled = false; }), bases, catalog);
-  assert.equal(off.websearch.vars, undefined);
+  assert.equal(off.websearch!.vars, undefined);
   const elsewhere = generateConfigs(variant((c) => { c.aiGateway.accountId = "fedcba9876543210fedcba9876543210"; }), bases, catalog);
-  assert.equal(elsewhere.websearch.vars, undefined);
+  assert.equal(elsewhere.websearch!.vars, undefined);
 
   // Built, and so type-checked, with the rest.
   const builds = buildCommands(validConfig, catalog).flat().map(({ args }) => args);
@@ -390,6 +391,30 @@ test("rejects a Web Search Worker name shared with another Worker", () => {
   assert.throws(
     () => validateConfig(variant((c) => { delete c.workers.websearch; })),
     /Missing required deployment value: workers.websearch.name/);
+});
+
+test("omits Web Search from the deployment plan when it is unselected", async () => {
+  const off = variant((c) => {
+    c.webSearch = { enabled: false };
+    c.workers.websearch = { name: "<WEBSEARCH_WORKER_NAME>" };
+  });
+  const bases = await baseConfigs();
+  const generated = generateConfigs(off, bases, catalog);
+
+  assert.equal(generated.websearch, undefined);
+  assert.equal(generated.router.services!.some((service) => service.binding === "GATEKEEPER_WEBSEARCH"), false);
+  assert.equal(generated.workshop.services!.some((service) => service.binding === "GATEKEEPER_WEBSEARCH"), false);
+  assert.equal(buildCommands(off, catalog).flat().some(({ args }) => args.includes("gatekeeper-websearch")), false);
+  assert.equal(deployOrder(off).includes("websearch"), false);
+  // The placeholder name is ignored, and the name is not required.
+  assert.doesNotThrow(() => validateConfig(variant((c) => {
+    c.webSearch = { enabled: false };
+    delete c.workers.websearch;
+  })));
+  assert.throws(() => validateConfig(variant((c) => { c.webSearch = { enabled: "no" }; })),
+    /webSearch\.enabled must be a boolean/);
+  // Absent still deploys it: that is the starter default.
+  assert.ok(generateConfigs(validConfig, bases, catalog).websearch);
 });
 
 test("keeps every Worker behind the router off the public internet", async () => {
@@ -987,6 +1012,8 @@ test("signs in through the GitHub Gatekeeper when auth.mode is github", async ()
     c.aiGateway = { enabled: false };
     c.customGatekeeper = { enabled: false };
     delete c.workers.customGatekeeper;
+    c.webSearch = { enabled: false };
+    delete c.workers.websearch;
     c.gatekeepers = {
       github: { name: "acme-cloudflare-os-github" },
       mcp: { name: "acme-cloudflare-os-mcp" },
@@ -1002,9 +1029,13 @@ test("signs in through the GitHub Gatekeeper when auth.mode is github", async ()
     DISABLE_PASSWORD_AUTH: "true",
     PUBLIC_BASE_URL: "https://os.example.com",
   });
-  assert.equal(vars.CF_ACCESS_ISS, undefined);
-  assert.equal(vars.CF_ACCESS_AUD, undefined);
-  assert.equal(vars.CF_AI_GATEWAY, undefined);
+  assert.equal("CF_ACCESS_ISS" in vars, false);
+  assert.equal("CF_ACCESS_AUD" in vars, false);
+  assert.equal("CF_AI_GATEWAY" in vars, false);
+  assert.equal(generated.websearch, undefined);
+  assert.equal(generated.router.services!.some((service) => service.binding === "GATEKEEPER_WEBSEARCH"), false);
+  assert.equal(generated.workshop.services!.some((service) => service.binding === "GATEKEEPER_WEBSEARCH"), false);
+  assert.equal(deployOrder(github).includes("websearch"), false);
   assert.deepEqual(generated.workshop.ai, { binding: "WORKERS_AI" });
   assert.equal(generated.customGatekeeper, undefined);
   assert.equal(generated.router.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);

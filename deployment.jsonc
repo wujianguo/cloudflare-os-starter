@@ -6,9 +6,7 @@
   // Derived from workers.router.route.customDomain. null keeps Context scoped to that origin.
   "publicBaseUrl": null,
 
-  // Permanent service identities. The seven production Workers are the router, Workshop, Context,
-  // Scheduler, MCP, GitHub and Error Reporter. Web Search is an extra Worker this starter always
-  // deploys; the name is the hosted convention. Nothing here creates it.
+  // The seven production Workers: router, Workshop, Context, Scheduler, MCP, GitHub, Error Reporter.
   "workers": {
     "router": {
       "name": "cloudflareos",
@@ -17,10 +15,11 @@
     "workshop": { "name": "cloudflareos-backend" },
     "context": { "name": "cloudflareos-gk-context" },
     "scheduler": { "name": "cloudflareos-gk-scheduler" },
-    // Eighth Worker. A later approved deploy would create it. This branch does not deploy.
-    "websearch": { "name": "cloudflareos-gk-websearch" },
     "errorReporter": { "name": "cloudflareos-errors" }
   },
+
+  // This deployment never had Web Search. Leave it out of the plan rather than naming an eighth Worker.
+  "webSearch": { "enabled": false },
 
   // GitHub and the user-endpoint MCP Gatekeeper only. Google, PDF Renderer, Microsoft and
   // PagerDuty are left unselected. GitHub OAuth secrets stay on the Worker: record the names
