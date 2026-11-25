@@ -1,0 +1,31 @@
+name: Release input access
+
+# Reference accessibility only. The expressions below are boolean comparisons, so the
+# runner receives true or false and never the value. This job does not set env, does
+# not install, and does not authenticate or deploy.
+#
+# Names are the env vars the current cf client and Wrangler account pin read
+# (packages/cf-os/src/cf-client.ts). CLIENT_ID is a Worker secret name in
+# deploy-inputs.json, passed on stdin to wrangler secret bulk, not an Actions input,
+# so it is not referenced here.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  access:
+    name: Reference accessibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Boolean reference checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "event=${{ github.event_name }} same_repository=${{ github.event.pull_request.head.repo.full_name == github.repository }}"
+          echo "scope=repository context=secret ref=CLOUDFLARE_API_TOKEN accessible=${{ secrets.CLOUDFLARE_API_TOKEN != '' }}"
+          echo "scope=repository context=variable ref=CLOUDFLARE_API_TOKEN accessible=${{ vars.CLOUDFLARE_API_TOKEN != '' }}"
+          echo "scope=repository context=secret ref=CLOUDFLARE_ACCOUNT_ID accessible=${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}"
+          echo "scope=repository context=variable ref=CLOUDFLARE_ACCOUNT_ID accessible=${{ vars.CLOUDFLARE_ACCOUNT_ID != '' }}"
