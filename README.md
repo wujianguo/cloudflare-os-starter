@@ -4,6 +4,28 @@
 
 <h1 align="center">Customized for your Company</h1>
 
+## This production deployment
+
+This checkout deploys the existing `https://cloudflareos.apphub.work` installation described in
+[issue #2](https://github.com/wujianguo/cloudflare-os-starter/issues/2). `deployment.jsonc` pins its
+seven Worker names and existing KV/R2 resources. Sign-in is GitHub only; AI Gateway is disabled,
+and the Workers AI binding remains available for document conversion.
+
+Pushes to `main` or `codex/cloudflare-os-production-2026-11-25` run
+[the deployment workflow](.github/workflows/deploy.yml). It installs both committed lockfiles,
+checks upstream generated configs, runs lint/types/tests/builds and all seven Wrangler dry-runs,
+then deploys after those checks pass. No local build is required. Configure the existing deployment
+token as the repository Actions secret `CLOUDFLARE_API_TOKEN`. GitHub's existing `CLIENT_SECRET`
+stays on `cloudflareos-gk-github`; deployment inherits it without reading or replacing its value.
+
+The workflow refuses deployment if the pinned submodule is behind upstream `main`, inventories
+existing deployments and storage before writing, and verifies new active versions at 100% after
+deployment. Its `production-deployment-<commit>` artifact contains version IDs for recovery.
+Workshop v4 adds `AdminAuditDurableObject`; after this migration, repair forward with the complete
+v0–v4 history and class exports. Do not roll Workshop back to v3 or GitHub back to v0.
+Authenticated checks of existing data, schedules, GitHub login and Ollama inference still require
+a signed-in session. The remaining sections document the generic starter.
+
 <p align="center">
   Deploy a pinned Cloudflare OS release with branding, sign-in, integrations, routes, and upgrades under your control.
 </p>

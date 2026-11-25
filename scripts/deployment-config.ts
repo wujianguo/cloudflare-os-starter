@@ -31,13 +31,10 @@ export interface RouterRoute {
   customDomain?: string;
 }
 
-/** Cloudflare Access trust boundary and the `/admin` allowlist. */
-export interface AccessConfig {
-  /** Access team origin, HTTPS with no path. */
-  issuer: string;
-  /** The self-hosted Access application's AUD tag. */
-  audience: string;
-  /** Access-verified emails allowed into `/admin`. */
+/** GitHub authentication and the `/admin` allowlist. */
+export interface AuthConfig {
+  mode: "github";
+  /** GitHub-verified emails allowed into `/admin`. */
   admins: string[];
 }
 
@@ -111,15 +108,14 @@ export interface DeploymentConfig {
     workshop: { name: string };
     context: { name: string };
     scheduler: { name: string };
-    customGatekeeper: { name: string };
+    mcpGatekeeper: { name: string };
+    githubGatekeeper: { name: string; clientId: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
   };
-  access: AccessConfig;
+  auth: AuthConfig;
   aiGateway: AiGatewayConfigInput;
   context: ContextConfig;
-  /** Display text the example custom Gatekeeper serves to agents. */
-  customGatekeeper: { name: string; message: string };
   /** Private explicit-issue destination. */
   errorReporting: { enabled: boolean; environment?: string; release?: string | null };
   /** Workshop KV/R2. `null` requests Wrangler automatic provisioning. */
@@ -164,7 +160,7 @@ export type ProdWranglerConfig =
     workers_dev?: boolean;
     /** Custom-domain routes. Wrangler creates DNS and TLS for each. */
     routes?: { pattern: string; custom_domain: boolean }[];
-    /** Turned off on every Worker: a preview URL is an unauthenticated path around Access. */
+    /** Turned off on every Worker: only the router should expose a public URL. */
     preview_urls?: boolean;
     observability?: ProdObservabilityConfig;
     /** Workers AI. Both the AI Gateway transport and what webFetch's `toMarkdown()` runs on. */
@@ -181,7 +177,8 @@ export interface GeneratedConfigs {
   workshop: ProdWranglerConfig;
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
-  customGatekeeper: ProdWranglerConfig;
+  mcpGatekeeper: ProdWranglerConfig;
+  githubGatekeeper: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
 }
@@ -192,7 +189,8 @@ export interface BaseConfigs {
   workshop: ProdWranglerConfig;
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
-  customGatekeeper: ProdWranglerConfig;
+  mcpGatekeeper: ProdWranglerConfig;
+  githubGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
 }
 
