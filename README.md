@@ -8,15 +8,21 @@
 
 This checkout deploys the existing `https://cloudflareos.apphub.work` installation described in
 [issue #2](https://github.com/wujianguo/cloudflare-os-starter/issues/2). `deployment.jsonc` pins its
-seven Worker names and existing KV/R2 resources. Sign-in is GitHub only; AI Gateway is disabled,
+eight Worker names and existing KV/R2 resources. Sign-in is GitHub only; AI Gateway is disabled,
 and the Workers AI binding remains available for document conversion.
 
-Pushes to `main` or `codex/cloudflare-os-production-2026-11-25` run
+Pushes to `main` or `codex/cloudflare-os-production-2026-11-25` or `codex/email-routing-2026-11-26` run
 [the deployment workflow](.github/workflows/deploy.yml). It installs both committed lockfiles,
-checks upstream generated configs, runs lint/types/tests/builds and all seven Wrangler dry-runs,
+checks upstream generated configs, runs lint/types/tests/builds and all eight Wrangler dry-runs,
 then deploys after those checks pass. No local build is required. Configure the existing deployment
 token as the repository Actions secret `CLOUDFLARE_API_TOKEN`. GitHub's existing `CLIENT_SECRET`
 stays on `cloudflareos-gk-github`; deployment inherits it without reading or replacing its value.
+
+The Email Gatekeeper is `cloudflareos-gk-email`, reached at `/gatekeeper/email`. Workshop uses
+its `GatekeeperVendor` entrypoint; Router uses its default fetch/email handlers. Existing Email
+Routing rules targeting `cloudflareos` can therefore keep that target. Deploying the Worker does
+not change MX records or Email Routing rules, and inbound delivery also requires a mailbox bound
+to a Gadget hook. A configured address without a hook is rejected by the upstream Worker.
 
 The workflow refuses deployment if the pinned submodule is behind upstream `main`, inventories
 existing deployments and storage before writing, and verifies new active versions at 100% after

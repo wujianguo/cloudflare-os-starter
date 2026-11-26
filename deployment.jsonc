@@ -27,6 +27,9 @@
       "name": "cloudflareos-gk-github",
       "clientId": "Ov23lig6sVCZgMCAoCAQ"
     },
+    "emailGatekeeper": {
+      "name": "cloudflareos-gk-email"
+    },
     "errorReporter": {
       "name": "cloudflareos-errors"
     }

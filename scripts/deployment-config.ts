@@ -110,6 +110,7 @@ export interface DeploymentConfig {
     scheduler: { name: string };
     mcpGatekeeper: { name: string };
     githubGatekeeper: { name: string; clientId: string };
+    emailGatekeeper: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
   };
@@ -156,6 +157,9 @@ export type ProdWranglerConfig =
     r2_buckets?: (BindingDecl & { bucket_name?: string })[];
     /** The deployment's account, pinned so a stray `CLOUDFLARE_ACCOUNT_ID` cannot redirect it. */
     account_id?: string;
+    /** Upstream Worker bundle settings, retained verbatim. */
+    minify?: boolean;
+    upload_source_maps?: boolean;
     /** Whether the Worker answers on the account's workers.dev subdomain. */
     workers_dev?: boolean;
     /** Custom-domain routes. Wrangler creates DNS and TLS for each. */
@@ -179,6 +183,7 @@ export interface GeneratedConfigs {
   scheduler: ProdWranglerConfig;
   mcpGatekeeper: ProdWranglerConfig;
   githubGatekeeper: ProdWranglerConfig;
+  emailGatekeeper: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
 }
@@ -191,6 +196,7 @@ export interface BaseConfigs {
   scheduler: ProdWranglerConfig;
   mcpGatekeeper: ProdWranglerConfig;
   githubGatekeeper: ProdWranglerConfig;
+  emailGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
 }
 

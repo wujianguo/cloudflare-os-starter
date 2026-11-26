@@ -3,6 +3,9 @@ name: Email Routing inventory
 on:
   push:
     branches: [codex/email-routing-2026-11-26]
+    paths:
+      - scripts/email-routing-inventory.ts
+      - .github/workflows/email-routing-inventory.yml
   workflow_dispatch:
 
 permissions:

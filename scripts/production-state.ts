@@ -28,7 +28,7 @@ async function api<T>(path: string): Promise<T> {
 type Version = { version_id: string; percentage: number };
 type Deployment = { id: string; versions: Version[] };
 type Binding = { name: string; type: string; namespace_id?: string; bucket_name?: string; service?: string; entrypoint?: string };
-type Snapshot = { root: string; submodule: string; workers: Record<string, Deployment> };
+type Snapshot = { root: string; submodule: string; workers: Record<string, Deployment | null> };
 const snapshot: Snapshot = {
   root: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   submodule: execFileSync("git", ["-C", "cloudflare-os", "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
@@ -51,8 +51,19 @@ assert.ok(buckets.buckets.some((bucket) => bucket.name === config.resources.blue
 const githubSecrets = await api<{ name: string }[]>(`${accountPath}/workers/scripts/${config.workers.githubGatekeeper.name}/secrets`);
 assert.ok(githubSecrets.some((secret) => secret.name === "CLIENT_SECRET"), "GitHub CLIENT_SECRET must already exist; this workflow never writes secrets.");
 
+const existingWorkers = await api<{ id: string; handlers?: string[] }[]>(`${accountPath}/workers/scripts`);
 for (const worker of Object.values(config.workers)) {
   if (!worker) continue;
+  if (mode === "before" && worker.name === config.workers.emailGatekeeper.name) {
+    if (!existingWorkers.some((existing) => existing.id === worker.name)) {
+      snapshot.workers[worker.name] = null;
+      await save();
+      console.log(`${worker.name}: new Email Worker, not yet provisioned`);
+      continue;
+    }
+    const settings = await api<{ bindings: (Binding & { text?: string })[] }>(`${accountPath}/workers/scripts/${worker.name}/settings`);
+    assert.equal(settings.bindings.find((binding) => binding.name === "BASE_URL")?.text, `${publicOrigin(config)}/gatekeeper/email`, "Existing Email Worker name belongs to a different configuration.");
+  }
   const { deployments } = await api<{ deployments: Deployment[] }>(`${accountPath}/workers/scripts/${worker.name}/deployments`);
   const active = deployments[0];
   assert.ok(active, `${worker.name}: no active deployment.`);
@@ -66,7 +77,8 @@ for (const worker of Object.values(config.workers)) {
 if (mode === "after") {
   const before = JSON.parse(await readFile("deployment-records/before.json", "utf8")) as Snapshot;
   for (const [name, deployment] of Object.entries(snapshot.workers)) {
-    assert.notEqual(deployment.versions[0].version_id, before.workers[name].versions[0].version_id, `${name}: active version did not change.`);
+    assert.ok(deployment, `${name}: missing active deployment.`);
+    assert.notEqual(deployment.versions[0].version_id, before.workers[name]?.versions[0].version_id, `${name}: active version did not change.`);
     const subdomain = await api<{ enabled: boolean; previews_enabled: boolean }>(`${accountPath}/workers/scripts/${name}/subdomain`);
     assert.equal(subdomain.enabled, false, `${name}: unexpected workers.dev route.`);
     assert.equal(subdomain.previews_enabled, false, `${name}: preview URLs must be disabled.`);
@@ -82,6 +94,7 @@ if (mode === "after") {
     ["GATEKEEPER_SCHEDULER", "service", config.workers.scheduler.name],
     ["GATEKEEPER_MCP", "service", config.workers.mcpGatekeeper.name],
     ["GATEKEEPER_GITHUB", "service", config.workers.githubGatekeeper.name],
+    ["GATEKEEPER_EMAIL", "service", config.workers.emailGatekeeper.name],
   ]) {
     const binding = bindings.find((item) => item.name === name);
     assert.equal(binding?.type, type, `${name}: binding type mismatch.`);
@@ -89,11 +102,19 @@ if (mode === "after") {
   }
   assert.ok(bindings.some((binding) => binding.name === "WORKERS_AI" && binding.type === "ai"));
   assert.ok(!bindings.some((binding) => binding.name === "GATEKEEPER_CUSTOM"));
-  for (const path of ["/", "/gatekeeper/github/oauth"]) {
+  assert.equal(bindings.find((binding) => binding.name === "GATEKEEPER_EMAIL")?.entrypoint, "GatekeeperVendor");
+  const router = await api<{ bindings: Binding[] }>(`${accountPath}/workers/scripts/${config.workers.router.name}/settings`);
+  const routerEmail = router.bindings.find((binding) => binding.name === "GATEKEEPER_EMAIL");
+  assert.equal(routerEmail?.service, config.workers.emailGatekeeper.name);
+  assert.ok(!routerEmail?.entrypoint, "Router must reach Email's default fetch/email handlers.");
+  const email = await api<{ bindings: (Binding & { text?: string })[]; migration_tag?: string }>(`${accountPath}/workers/scripts/${config.workers.emailGatekeeper.name}/settings`);
+  assert.equal(email.bindings.find((binding) => binding.name === "BASE_URL")?.text, `${publicOrigin(config)}/gatekeeper/email`);
+  assert.ok(existingWorkers.find((worker) => worker.id === config.workers.emailGatekeeper.name)?.handlers?.includes("email"), "Email Worker has no email handler.");
+  for (const [path, expectedStatus] of [["/", 200], ["/gatekeeper/github/oauth", 200], ["/gatekeeper/email", 404]] as const) {
     const response = await fetch(`${publicOrigin(config)}${path}`, { redirect: "manual", signal: AbortSignal.timeout(30_000) });
-    assert.equal(response.status, 200, `${path}: expected HTTP 200 without Access redirect.`);
-    console.log(`${path}: HTTP 200`);
+    assert.equal(response.status, expectedStatus, `${path}: unexpected response or Access redirect.`);
+    console.log(`${path}: HTTP ${expectedStatus}`);
     await response.body?.cancel();
   }
-  console.log("All seven production Workers verified. Authenticated data and model checks require a signed-in session.");
+  console.log("All eight production Workers verified. Authenticated data and model checks require a signed-in session.");
 }

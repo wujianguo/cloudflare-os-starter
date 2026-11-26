@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - codex/cloudflare-os-production-2026-11-25
+      - codex/email-routing-2026-11-26
   pull_request:
   workflow_dispatch:
 
@@ -22,7 +23,7 @@ env:
 
 jobs:
   check:
-    name: Lint, tests, build and seven-Worker dry-run
+    name: Lint, tests, build and eight-Worker dry-run
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -54,7 +55,7 @@ jobs:
           pnpm --dir cloudflare-os types:scripts
       - name: Lint and type-check deployment tooling
         run: pnpm lint
-      - name: Test, build without cache, and dry-run all seven Workers
+      - name: Test, build without cache, and dry-run all eight Workers
         run: pnpm check
       - name: Require a clean checkout after verification
         run: git diff --exit-code && test -z "$(git ls-files --others --exclude-standard)"
@@ -95,7 +96,7 @@ jobs:
           pinned=$(git rev-parse HEAD:cloudflare-os)
           latest=$(git ls-remote https://github.com/cloudflare/cloudflare-os.git refs/heads/main | cut -f1)
           test "$pinned" = "$latest" || { echo "Upstream advanced to $latest; update the gitlink and rerun CI."; exit 1; }
-      - name: Deploy seven Workers, Router last
+      - name: Deploy eight Workers, Router last
         run: pnpm deploy
       - name: Verify active versions, bindings and public HTTP routes
         run: node scripts/production-state.ts after

@@ -23,6 +23,7 @@ const validConfig: DeploymentConfig = {
       name: "acme-cloudflare-os-github",
       clientId: "github-client-id",
     },
+    emailGatekeeper: { name: "acme-cloudflare-os-email" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
   auth: {
@@ -77,6 +78,7 @@ async function baseConfigs(): Promise<BaseConfigs> {
     scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
     mcpGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc"),
     githubGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-github/wrangler.jsonc"),
+    emailGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-email/wrangler.jsonc"),
     errorReporter: await baseConfig("../packages/error-reporter/wrangler.jsonc"),
   };
 }
@@ -234,6 +236,11 @@ test("generates GitHub-only Workshop, Context, MCP, and GitHub configs", async (
       service: "acme-cloudflare-os-github",
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_EMAIL",
+      service: "acme-cloudflare-os-email",
+      entrypoint: "GatekeeperVendor",
+    },
   ]);
   assert.equal(generated.workshop.services.some(
     (service) => service.binding === "GATEKEEPER_CUSTOM"), false);
@@ -299,6 +306,7 @@ test("gives the router the public route, the frontend, and every service binding
     { binding: "GATEKEEPER_SCHEDULER", service: "acme-cloudflare-os-scheduler" },
     { binding: "GATEKEEPER_MCP", service: "acme-cloudflare-os-mcp" },
     { binding: "GATEKEEPER_GITHUB", service: "acme-cloudflare-os-github" },
+    { binding: "GATEKEEPER_EMAIL", service: "acme-cloudflare-os-email" },
   ]);
   assert.equal(generated.router.services.some(
     (service) => service.binding === "GATEKEEPER_CUSTOM"), false);
@@ -655,4 +663,25 @@ test("skips the Error Reporter build when error reporting is disabled", () => {
   });
   const commands = buildCommands(config).map(({ args }) => args.join(" "));
   assert.equal(commands.some((command) => command.includes("error-reporter")), false);
+});
+
+// Email has its own three Durable Object classes; derive their history from upstream verbatim.
+test("preserves the Email Worker contract and confines HTTP to the Router", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(validConfig, bases);
+  const email = generated.emailGatekeeper;
+  assert.equal(email.name, "acme-cloudflare-os-email");
+  assert.equal(email.vars!.BASE_URL, "https://os.example.com/gatekeeper/email");
+  assert.equal(email.workers_dev, false);
+  assert.equal(email.preview_urls, false);
+  assert.equal(email.routes, undefined);
+  assert.equal(email.secrets, undefined);
+  for (const key of ["main", "build", "compatibility_date", "compatibility_flags", "rules", "migrations", "minify", "upload_source_maps"] as const) {
+    assert.deepEqual(email[key], bases.emailGatekeeper[key]);
+  }
+  assert.deepEqual(email.migrations, [{
+    tag: "v0", new_sqlite_classes: ["UserAccount", "EmailGatekeeperImpl", "EmailAddress"],
+  }]);
+  const commands = buildCommands(validConfig).filter(({ args }) => args.includes("@gadgets/email-gatekeeper"));
+  assert.deepEqual(commands.map(({ args }) => args.at(-1)), ["build:configurator", "build"]);
 });

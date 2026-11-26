@@ -26,6 +26,7 @@ const packageDirs = {
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
   mcpGatekeeper: "cloudflare-os/packages/gatekeeper-mcp",
   githubGatekeeper: "cloudflare-os/packages/gatekeeper-github",
+  emailGatekeeper: "cloudflare-os/packages/gatekeeper-email",
   errorReporter: "packages/error-reporter",
 } as const;
 const generatedPaths = Object.fromEntries(
@@ -42,6 +43,7 @@ const requiredPaths = [
   "workers.scheduler.name",
   "workers.mcpGatekeeper.name",
   "workers.githubGatekeeper.name",
+  "workers.emailGatekeeper.name",
   "workers.githubGatekeeper.clientId",
   "auth.mode",
   "auth.admins",
@@ -433,6 +435,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const scheduler = structuredClone(bases.scheduler);
   const mcpGatekeeper = structuredClone(bases.mcpGatekeeper);
   const githubGatekeeper = structuredClone(bases.githubGatekeeper);
+  const emailGatekeeper = structuredClone(bases.emailGatekeeper);
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
@@ -447,6 +450,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_MCP", service: config.workers.mcpGatekeeper.name },
     { binding: "GATEKEEPER_GITHUB", service: config.workers.githubGatekeeper.name },
+    { binding: "GATEKEEPER_EMAIL", service: config.workers.emailGatekeeper.name },
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
@@ -516,6 +520,11 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.githubGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_EMAIL",
+      service: config.workers.emailGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    },
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -569,12 +578,18 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     ])],
   };
 
+  setCommon(emailGatekeeper, config, config.workers.emailGatekeeper.name);
+  emailGatekeeper.vars = {
+    ...emailGatekeeper.vars,
+    BASE_URL: `${origin}/gatekeeper/email`,
+  };
+
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
   return {
-    router, workshop, context, scheduler, mcpGatekeeper, githubGatekeeper,
+    router, workshop, context, scheduler, mcpGatekeeper, githubGatekeeper, emailGatekeeper,
     ...(errorReporter && { errorReporter }),
   };
 }
@@ -626,6 +641,8 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     { args: submoduleBuild("@gadgets/mcp-gatekeeper") },
     { args: submoduleBuild("@gadgets/github-gatekeeper", "build:configurator") },
     { args: submoduleBuild("@gadgets/github-gatekeeper") },
+    { args: submoduleBuild("@gadgets/email-gatekeeper", "build:configurator") },
+    { args: submoduleBuild("@gadgets/email-gatekeeper") },
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
     // Authentication mode is a build-time constant in the frontend bundle (`src/useAuth.ts`).
     { args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "false" } },
@@ -741,6 +758,7 @@ async function main(): Promise<void> {
     scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
     mcpGatekeeper: await readJsonc(join(root, packageDirs.mcpGatekeeper, "wrangler.jsonc")),
     githubGatekeeper: await readJsonc(join(root, packageDirs.githubGatekeeper, "wrangler.jsonc")),
+    emailGatekeeper: await readJsonc(join(root, packageDirs.emailGatekeeper, "wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
   });
   reportAiGateway(config);
@@ -762,6 +780,7 @@ async function main(): Promise<void> {
     deployWorker(packageDirs.scheduler, deployArgs);
     deployWorker(packageDirs.mcpGatekeeper, deployArgs);
     deployWorker(packageDirs.githubGatekeeper, deployArgs);
+    deployWorker(packageDirs.emailGatekeeper, deployArgs);
     deployWorker(packageDirs.workshop, deployArgs);
     // Last: it binds every one of the above.
     deployWorker(packageDirs.router, deployArgs);
